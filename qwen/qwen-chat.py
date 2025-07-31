@@ -39,16 +39,6 @@ async def log_request_time(request: Request, call_next):
     print(logmessage)
     return response
 
-
-class QwenRequest(BaseModel):
-    stream: bool = False
-    top_p: float = 0.9
-    temperature: float = 0.7
-    max_new_tokens: int = 256
-    model: str = "qwen-chat"
-    messages: List[QwenMessage]
-
-
 @app.post("/qwen/chat")
 async def chat(messages: List[QwenMessage]):
     prompt = messages[-1].content
@@ -109,6 +99,13 @@ def format_openai_stream_response(token: str, index: int = 0, role=None, finish_
         chunk["choices"][0]["delta"]["content"] = token
     return f"data: {chunk}\n\n"
 
+class QwenRequest(BaseModel):
+    stream: bool = False
+    top_p: float = 0.9
+    temperature: float = 0.7
+    max_new_tokens: int = 256
+    model: str = "qwen-chat"
+    messages: List[QwenMessage]
 
 @app.post("/v1/qwen/chat")
 async def chatV1(request: QwenRequest):

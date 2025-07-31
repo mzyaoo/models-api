@@ -22,7 +22,7 @@ def chat():
         messages,
         tokenize=False,
         add_generation_prompt=True,
-        enable_thinking=False  # 可选，是否生成“思考过程”
+        enable_thinking=True  # 可选，是否生成“思考过程”
     )
 
     inputs = tokenizer(text, return_tensors="pt").to(model.device)

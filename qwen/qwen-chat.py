@@ -4,11 +4,12 @@ from urllib.request import Request
 
 from fastapi import FastAPI
 from starlette.responses import StreamingResponse
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 import torch
 from pydantic import BaseModel
 from typing import List
 import time
+import threading
 # 启动 FastAPI 服务
 import uvicorn
 
@@ -20,10 +21,19 @@ app = FastAPI()
 # 在启动时加载模型和 tokenizer
 model_dir = "/Library/MyFolder/Models/Qwen/Qwen3-4B"
 tokenizer = AutoTokenizer.from_pretrained(model_dir, use_fast=False)
+
+# 检查MPS是否可用，如果可用则使用MPS加速
+if torch.backends.mps.is_available():
+    device = "mps"
+    print("使用MPS加速 (Apple Silicon)")
+else:
+    device = "auto"
+    print("使用默认设备映射")
+
 model = AutoModelForCausalLM.from_pretrained(
     model_dir,
     torch_dtype=torch.float16,
-    device_map="auto"
+    device_map=device
 )
 model.eval()
 
@@ -53,26 +63,32 @@ async def chat(messages: List[QwenMessage]):
 
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
 
-    # 定义生成器函数，用于流式返回
+    # 使用TextIteratorStreamer实现流式响应
     def generate_stream():
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=256,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                output_scores=True,
-                return_dict_in_generate=True
-            )
-
-            # 获取新生成的 token（排除输入部分）
-            generated_tokens = outputs.sequences[0][inputs.input_ids.shape[1]:]
-
-            for token in generated_tokens:
-                word = tokenizer.decode([token.item()], skip_special_tokens=True)
-                if word.strip():
-                    yield word
+        # 创建TextIteratorStreamer实例
+        streamer = TextIteratorStreamer(
+            tokenizer, 
+            skip_prompt=True,  # 跳过输入提示
+            skip_special_tokens=True  # 跳过特殊token
+        )
+        
+        # 在后台线程中运行模型生成
+        generation_kwargs = dict(
+            **inputs,
+            max_new_tokens=256,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            streamer=streamer
+        )
+        
+        thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        thread.start()
+        
+        # 从streamer中获取生成的文本
+        for text_chunk in streamer:
+            if text_chunk.strip():
+                yield text_chunk
 
     # 返回流式响应
     return StreamingResponse(generate_stream(), media_type="text/plain")
@@ -123,23 +139,30 @@ async def chatV1(request: QwenRequest):
     def stream_generator():
         yield format_openai_stream_response("", role="assistant")  # 开头角色
 
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=request.max_new_tokens,
-                do_sample=True,
-                temperature=request.temperature,
-                top_p=request.top_p,
-                output_scores=True,
-                return_dict_in_generate=True
-            )
-
-            generated_tokens = outputs.sequences[0][inputs.input_ids.shape[1]:]
-
-            for token in generated_tokens:
-                word = tokenizer.decode([token.item()], skip_special_tokens=True)
-                if word.strip():
-                    yield format_openai_stream_response(word)
+        # 使用TextIteratorStreamer实现流式响应
+        streamer = TextIteratorStreamer(
+            tokenizer, 
+            skip_prompt=True,  # 跳过输入提示
+            skip_special_tokens=True  # 跳过特殊token
+        )
+        
+        # 在后台线程中运行模型生成
+        generation_kwargs = dict(
+            **inputs,
+            max_new_tokens=request.max_new_tokens,
+            do_sample=True,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            streamer=streamer
+        )
+        
+        thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        thread.start()
+        
+        # 从streamer中获取生成的文本
+        for text_chunk in streamer:
+            if text_chunk.strip():
+                yield format_openai_stream_response(text_chunk)
 
         yield format_openai_stream_response("", finish_reason="stop")
         yield "data: [DONE]\n\n"
